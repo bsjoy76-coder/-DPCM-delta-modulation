@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DPCM &amp; Delta Modulation Simulator</title>
+<style>
+:root {
+  --bg:#f7f7f5; --panel:#ffffff; --border:#dcdad3; --text:#1a1a1a; --sub:#5a5a55;
+  --accent:#185fa5; --accent2:#0f6e56; --warn:#993c1d; --good:#3b6d11; --bad:#a32d2d;
+  box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg:#17171a; --panel:#232326; --border:#3a3a3d; --text:#eee; --sub:#aaa;
+  --accent:#5aa4ec; --accent2:#4fd3ab; --warn:#f0997b; --good:#97c459; --bad:#f09595; }
+}
+:root[data-theme="dark"] { --bg:#17171a; --panel:#232326; --border:#3a3a3d; --text:#eee; --sub:#aaa;
+  --accent:#5aa4ec; --accent2:#4fd3ab; --warn:#f0997b; --good:#97c459; --bad:#f09595; }
+html{scroll-padding-top:env(safe-area-inset-top,0px);}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.5;}
+.wrap{max-width:900px;margin:0 auto;padding:1.5rem 1rem 3rem;}
+h1{font-size:1.3rem;margin:0 0 .25rem;}
+h2{font-size:1.05rem;margin:1.6rem 0 .5rem;color:var(--accent);}
+p.sub{color:var(--sub);margin:0 0 1rem;font-size:.9rem;}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:1rem;}
+.row{display:flex;flex-wrap:wrap;gap:.75rem;align-items:flex-end;margin-bottom:.5rem;}
+.field{display:flex;flex-direction:column;font-size:.8rem;color:var(--sub);gap:.25rem;}
+.field select,.field input[type=number]{padding:.35rem .4rem;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);width:110px;}
+.field input[type=range]{width:160px;}
+button{background:var(--accent);color:#fff;border:none;padding:.5rem .9rem;border-radius:6px;font-size:.85rem;cursor:pointer;}
+button.sec{background:transparent;color:var(--accent);border:1px solid var(--accent);}
+button:active{opacity:.8;}
+.chartbox{position:relative;height:220px;margin:.5rem 0 1rem;}
+.pill{display:inline-block;padding:.15rem .55rem;border-radius:20px;font-size:.75rem;font-weight:600;margin-right:.4rem;}
+.pill.good{background:rgba(59,109,17,.15);color:var(--good);}
+.pill.bad{background:rgba(163,45,45,.15);color:var(--bad);}
+.stat{display:inline-block;margin-right:1.2rem;font-size:.85rem;}
+.stat b{font-size:1rem;}
+.note{font-size:.85rem;color:var(--sub);border-left:3px solid var(--accent);padding:.4rem .7rem;background:rgba(24,95,165,.06);border-radius:0 6px 6px 0;margin:.5rem 0;}
+.interp{font-size:.88rem;margin-top:.4rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Experiment 5 — DPCM &amp; delta modulation</h1>
+<p class="sub">Prediction, quantization and reconstruction are kept as separate, inspectable stages. Change a setting and re-run to compare theory against the simulated result.</p>
+
+<div class="card">
+  <h2 style="margin-top:0">1 · Input signal</h2>
+  <div class="row">
+    <div class="field"><label>Signal type</label>
+      <select id="sigType">
+        <option value="slow">Slowly varying (low-freq sine)</option>
+        <option value="fast">Rapidly varying (high-freq sine)</option>
+        <option value="mixed">Mixed (chirp: slow→fast)</option>
+        <option value="step">Step (fast transient)</option>
+      </select>
+    </div>
+    <div class="field"><label>Samples (N)</label><input id="N" type="number" value="200" min="50" max="500"></div>
+    <div class="field"><label>Sample rate f_s</label><input id="fs" type="number" value="200" min="20" max="2000"></div>
+    <div class="field"><label>Amplitude</label><input id="amp" type="number" value="1" step="0.1" min="0.1" max="5"></div>
+  </div>
+  <div class="note" id="expectNote">Expected: a low-frequency input changes little sample-to-sample, so a first-order predictor should track it closely and the prediction error should stay small.</div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">2 · First-order DPCM</h2>
+  <div class="row">
+    <div class="field"><label>Quantizer levels</label>
+      <select id="dpcmLevels"><option>4</option><option selected>8</option><option>16</option><option>32</option></select>
+    </div>
+    <button id="runDPCM">Run DPCM simulation</button>
+  </div>
+  <div id="dpcmStats"></div>
+  <div class="chartbox"><canvas id="chartOrigPred" role="img" aria-label="Original signal vs DPCM predicted and reconstructed samples over time">Original vs predicted samples.</canvas></div>
+  <div class="chartbox"><canvas id="chartErr" role="img" aria-label="DPCM prediction error compared with direct PCM quantization error over time">Prediction error vs PCM error.</canvas></div>
+  <div class="interp" id="dpcmInterp"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">3 · Delta modulation</h2>
+  <div class="row">
+    <div class="field"><label>Step size Δ</label><input id="delta" type="range" min="0.01" max="1" step="0.01" value="0.1"><span id="deltaVal" style="font-size:.85rem">0.10</span></div>
+    <button class="sec" id="presetSmall">Small Δ</button>
+    <button class="sec" id="presetMod">Moderate Δ</button>
+    <button class="sec" id="presetLarge">Large Δ</button>
+    <label style="font-size:.85rem;display:flex;align-items:center;gap:.3rem;"><input type="checkbox" id="adaptive"> Adaptive DM</label>
+    <button id="runDM">Run delta modulation</button>
+  </div>
+  <div id="dmStats"></div>
+  <div class="chartbox"><canvas id="chartDelta" role="img" aria-label="Delta modulation staircase reconstruction against the original signal">Delta staircase vs original.</canvas></div>
+  <div id="validation"></div>
+  <div class="interp" id="dmInterp"></div>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">4 · MSE versus step size</h2>
+  <p class="sub" style="margin-top:-.3rem">Sweeps Δ from 0.01 to 1.0 (non-adaptive DM) on the current input signal and plots reconstruction MSE, to locate the granular-noise / slope-overload trade-off.</p>
+  <button id="runSweep">Run MSE sweep</button>
+  <div class="chartbox"><canvas id="chartMSE" role="img" aria-label="Mean squared error versus delta modulation step size, showing the optimal step size">MSE vs step size.</canvas></div>
+  <div class="interp" id="sweepInterp"></div>
+</div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+function isDark(){ return matchMedia('(prefers-color-scheme: dark)').matches; }
+const ink = () => isDark() ? '#eee' : '#1a1a1a';
+const grid = () => isDark() ? '#3a3a3d' : '#e1e0d9';
+
+function genSignal(type, N, fs, amp){
+  const x = [];
+  for(let n=0;n<N;n++){
+    const t = n/fs;
+    let v;
+    if(type==='slow') v = amp*Math.sin(2*Math.PI*2*t);
+    else if(type==='fast') v = amp*Math.sin(2*Math.PI*30*t);
+    else if(type==='mixed'){ const f = 1 + (28*n/N); v = amp*Math.sin(2*Math.PI*f*t); }
+    else { v = amp*(n < N/3 ? -1 : (n < 2*N/3 ? 1 : -0.3)); }
+    x.push(v);
+  }
+  return x;
+}
+
+function uniformQuantize(val, range, levels){
+  const step = (2*range)/levels;
+  let idx = Math.round((val+range)/step - 0.5);
+  idx = Math.max(0, Math.min(levels-1, idx));
+  return -range + step*(idx+0.5);
+}
+
+function mse(a,b){ let s=0; for(let i=0;i<a.length;i++) s+=(a[i]-b[i])**2; return s/a.length; }
+
+let charts = {};
+function upsertChart(id, config){
+  if(charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), config);
+}
+
+function baseLineOpts(yLabel){
+  return { responsive:true, maintainAspectRatio:false,
+    scales:{ x:{ ticks:{color:ink(),maxRotation:0,autoSkip:true}, grid:{color:grid()}, title:{display:true,text:'sample n',color:ink()} },
+             y:{ ticks:{color:ink()}, grid:{color:grid()}, title:{display:true,text:yLabel,color:ink()} } },
+    plugins:{ legend:{labels:{color:ink()}} } };
+}
+
+document.getElementById('delta').addEventListener('input', e=>{
+  document.getElementById('deltaVal').textContent = parseFloat(e.target.value).toFixed(2);
+});
+document.getElementById('presetSmall').onclick = ()=>{ document.getElementById('delta').value=0.03; document.getElementById('deltaVal').textContent='0.03'; };
+document.getElementById('presetMod').onclick = ()=>{ document.getElementById('delta').value=0.15; document.getElementById('deltaVal').textContent='0.15'; };
+document.getElementById('presetLarge').onclick = ()=>{ document.getElementById('delta').value=0.5; document.getElementById('deltaVal').textContent='0.50'; };
+
+document.getElementById('sigType').addEventListener('change', e=>{
+  const notes = {
+    slow: 'Expected: a low-frequency input changes little sample-to-sample, so a first-order predictor should track it closely and the prediction error should stay small.',
+    fast: 'Expected: a high-frequency input changes quickly between samples, so the predictor lags and the prediction error grows; delta modulation will need a larger Δ to avoid slope overload.',
+    mixed: 'Expected: prediction error and delta-mod tracking should start clean at low frequency and degrade as the frequency rises within the same run.',
+    step: 'Expected: the abrupt transitions will make the predictor and any fixed-Δ delta modulator lag briefly (slope overload) right after each jump, then settle into granular noise on the flat segments.'
+  };
+  document.getElementById('expectNote').textContent = notes[e.target.value];
+});
+
+document.getElementById('runDPCM').onclick = ()=>{
+  const N = +document.getElementById('N').value, fs = +document.getElementById('fs').value, amp = +document.getElementById('amp').value;
+  const type = document.getElementById('sigType').value;
+  const levels = +document.getElementById('dpcmLevels').value;
+  const x = genSignal(type, N, fs, amp);
+  const range = amp*1.2;
+
+  // First-order DPCM: predictor = previous reconstructed sample
+  const pred = new Array(N), recon = new Array(N), predErr = new Array(N), qErr = new Array(N);
+  recon[0] = uniformQuantize(x[0], range, levels);
+  pred[0] = 0; predErr[0] = x[0]-pred[0]; qErr[0] = recon[0]-x[0];
+  for(let n=1;n<N;n++){
+    pred[n] = recon[n-1];
+    const e = x[n]-pred[n];
+    predErr[n] = e;
+    const eq = uniformQuantize(e, range*0.6, levels);
+    recon[n] = pred[n]+eq;
+    qErr[n] = recon[n]-x[n];
+  }
+  // Direct PCM quantization at same level count, for comparison
+  const pcmQ = x.map(v=>uniformQuantize(v, range, levels));
+  const pcmErr = x.map((v,i)=>pcmQ[i]-v);
+
+  const mseDPCM = mse(x, recon), msePCM = mse(x, pcmQ);
+  document.getElementById('dpcmStats').innerHTML =
+    `<span class="stat">DPCM MSE <b>${mseDPCM.toFixed(4)}</b></span>`+
+    `<span class="stat">PCM MSE <b>${msePCM.toFixed(4)}</b></span>`+
+    `<span class="pill ${mseDPCM<=msePCM?'good':'bad'}">${mseDPCM<=msePCM?'DPCM lower error, as expected from prediction gain':'DPCM did not beat PCM here'}</span>`;
+
+  const labels = x.map((_,i)=>i);
+  upsertChart('chartOrigPred', { type:'line', data:{ labels, datasets:[
+    {label:'Original', data:x, borderColor:'#2a78d6', borderWidth:1.5, pointRadius:0},
+    {label:'Predicted', data:pred, borderColor:'#eb6834', borderWidth:1, borderDash:[4,3], pointRadius:0},
+    {label:'Reconstructed', data:recon, borderColor:'#1baf7a', borderWidth:1, pointRadius:0}
+  ]}, options: baseLineOpts('amplitude') });
+
+  upsertChart('chartErr', { type:'line', data:{ labels, datasets:[
+    {label:'DPCM prediction error', data:predErr, borderColor:'#6250d6', borderWidth:1.2, pointRadius:0},
+    {label:'PCM quantization error', data:pcmErr, borderColor:'#e34948', borderWidth:1, borderDash:[3,3], pointRadius:0}
+  ]}, options: baseLineOpts('error') });
+
+  const agree = mseDPCM <= msePCM;
+  document.getElementById('dpcmInterp').innerHTML =
+    `<b>Observation:</b> DPCM error variance is ${agree?'lower than':'not lower than'} direct PCM at the same quantizer resolution. `+
+    (agree ? 'This agrees with theory: predicting from the previous sample removes correlated (redundant) content, so only the smaller residual needs quantizing.' :
+    'This disagrees with the simple prediction-gain argument — check whether the signal is too high-frequency for a first-order predictor (weak sample-to-sample correlation), which would need a higher-order predictor to fix.');
+};
+
+function runDM(x, delta0, adaptive){
+  const N = x.length;
+  const recon = new Array(N); recon[0]=0;
+  const steps = new Array(N); steps[0]=0;
+  let d = delta0, sameSignRun = 0, lastSign = 0;
+  for(let n=1;n<N;n++){
+    const sign = Math.sign(x[n]-recon[n-1]) || 1;
+    if(adaptive){
+      if(sign===lastSign){ sameSignRun++; if(sameSignRun>=2) d = Math.min(d*1.5, delta0*8); }
+      else { sameSignRun=0; d = Math.max(delta0*0.5, d/1.5); }
+      lastSign = sign;
+    } else d = delta0;
+    recon[n] = recon[n-1] + sign*d;
+    steps[n] = sign*d;
+  }
+  return {recon, steps};
+}
+
+document.getElementById('runDM').onclick = ()=>{
+  const N = +document.getElementById('N').value, fs = +document.getElementById('fs').value, amp = +document.getElementById('amp').value;
+  const type = document.getElementById('sigType').value;
+  const delta = +document.getElementById('delta').value;
+  const adaptive = document.getElementById('adaptive').checked;
+  const x = genSignal(type, N, fs, amp);
+  const {recon, steps} = runDM(x, delta, adaptive);
+  const labels = x.map((_,i)=>i);
+
+  upsertChart('chartDelta', { type:'line', data:{ labels, datasets:[
+    {label:'Original', data:x, borderColor:'#2a78d6', borderWidth:1.5, pointRadius:0},
+    {label:'Delta-mod staircase', data:recon, borderColor:'#d95926', borderWidth:1.2, pointRadius:0, stepped:false}
+  ]}, options: baseLineOpts('amplitude') });
+
+  // Mandatory validation: check each step is exactly +/- current delta (within float tolerance)
+  let fails = 0, minStep=Infinity, maxStep=0;
+  for(let n=2;n<N;n++){
+    const s = Math.abs(recon[n]-recon[n-1]);
+    minStep = Math.min(minStep, s); maxStep = Math.max(maxStep, s);
+  }
+  const consistent = adaptive ? true : (maxStep-minStep < 1e-9);
+  document.getElementById('validation').innerHTML = adaptive ?
+    `<span class="pill good">Adaptive mode: step size intentionally varies between ${minStep.toFixed(3)} and ${maxStep.toFixed(3)}</span>` :
+    `<span class="pill ${consistent?'good':'bad'}">${consistent? 'Validated: every output step changes by exactly ±Δ = '+delta.toFixed(3) : 'Validation failed: step sizes vary ('+minStep.toFixed(3)+' to '+maxStep.toFixed(3)+') — check the sign logic'}</span>`;
+
+  const m = mse(x, recon);
+  // crude granular / slope-overload diagnosis
+  const diffs = x.slice(1).map((v,i)=>Math.abs(v-x[i]));
+  const maxSlope = Math.max(...diffs);
+  const overload = maxSlope > delta*1.5;
+  const flatRegions = diffs.filter(d=>d<delta*0.3).length / diffs.length;
+  const granular = flatRegions > 0.3 && delta > 0.05*amp;
+  document.getElementById('dmStats').innerHTML = `<span class="stat">Reconstruction MSE <b>${m.toFixed(4)}</b></span>`;
+  let interp = `<b>Observation:</b> `;
+  if(overload) interp += 'The signal\'s fastest change per sample exceeds what Δ can follow, so slope overload appears where the input rises or falls steeply — the staircase visibly lags the original there. ';
+  if(granular) interp += 'On flatter stretches the fixed step still forces the output to hunt up and down by ±Δ around the true value — this is granular noise. ';
+  if(!overload && !granular) interp += 'Δ is reasonably matched to this signal: no strong slope overload or granular noise is visible. ';
+  interp += overload ? 'Fix: increase Δ or use adaptive step sizing.' : (granular ? 'Fix: decrease Δ, at the cost of more slope-overload risk on fast transitions.' : '');
+  document.getElementById('dmInterp').innerHTML = interp;
+};
+
+document.getElementById('runSweep').onclick = ()=>{
+  const N = +document.getElementById('N').value, fs = +document.getElementById('fs').value, amp = +document.getElementById('amp').value;
+  const type = document.getElementById('sigType').value;
+  const x = genSignal(type, N, fs, amp);
+  const deltas = [];
+  for(let d=0.01; d<=1.001; d+=0.02) deltas.push(+d.toFixed(3));
+  const mses = deltas.map(d => mse(x, runDM(x, d, false).recon));
+  const minIdx = mses.indexOf(Math.min(...mses));
+
+  upsertChart('chartMSE', { type:'line', data:{ labels:deltas, datasets:[
+    {label:'MSE', data:mses, borderColor:'#0f6e56', borderWidth:1.8, pointRadius:0}
+  ]}, options: baseLineOpts('MSE') });
+  document.getElementById('chartMSE').closest('.chartbox').previousElementSibling; // no-op
+
+  document.getElementById('sweepInterp').innerHTML =
+    `<b>Observation:</b> minimum MSE (${mses[minIdx].toFixed(4)}) occurs near Δ ≈ ${deltas[minIdx]}. `+
+    `Below this Δ, error is dominated by slope overload (too small a step to follow the signal); above it, granular noise from an oversized fixed step dominates instead — the classic U-shaped curve.`;
+};
+
+document.getElementById('runDPCM').click();
+document.getElementById('runDM').click();
+document.getElementById('runSweep').click();
+</script>
+</body>
+</html>
